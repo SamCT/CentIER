@@ -16,7 +16,7 @@ By predicting the centromere of Arabidopsis, rice, corn, soybean, mulberry and o
 
 ## INSTALL
 
-The tool has the following software or package requirements.  
+CentIER can be downloaded from [here](https://github.com/simon19891216/CentIER/releases/tag/CentIERv2.0). The tool has the following software or package requirements.  
 
 1. **genometools**: As its name, **gt** is a genome tools and the repository is https://github.com/genometools/genometools.git. You can install gt in `apt-get install genometools` when you are root user. Otherwise you only use `make -j4` to Compile and install it. The gt requires `cario` and `pango`, you can use conda to install them. If you don't need it, use the `cairo=no` make parameter. In that case, run `make cairo=no` cleanup before running `make cairo=no` to start with a clean build environment. We recommend using [gt_V1.6.5](https://github.com/genometools/genometools/releases/tag/v1.6.5).  
 2. **LTR_retriever**: This is used to annotation genome and centremer regions. We recommend you build a **conda environment** to install it and use this enviroment to running **CentIER**. 
