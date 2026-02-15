@@ -106,7 +106,7 @@ def _analyze_chromosome(name_sequence):
             threshold = i
             break
 
-    intervals = get_interval(local_buck, name, threshold, chr_len=total_length).get(name, '')
+    intervals = get_interval(local_buck, name, threshold).get(name, '')
 
     low_complexity = set()
     for i in range(int(total_length / 200000) + 1):
