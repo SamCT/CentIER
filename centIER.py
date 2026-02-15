@@ -3,6 +3,8 @@ import argparse
 import sys,subprocess,os
 import pyfastx,random
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 import numpy as np
 import pandas as pd
 import shutil
@@ -22,7 +24,7 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
     parser = argparse.ArgumentParser(description=software)
     parser.add_argument("genome",help="Genome fasta file need to annotation")
     parser.add_argument('-o',"--output", default='./CentIER_final_results', help='output path')
-    parser.add_argument("--gff",help="optional, annotation file (gff or gtf format)")
+    parser.add_argument("--gff",help="optional, annotation file (gff or gtf format); gene features are preferred")
     parser.add_argument("-k","--kmer_size",type=int,default=21,help="the size of kmer")
     parser.add_argument("-c","--center_tolerance",type=int,default=15,help="the fine-tuning size between two regions")
     parser.add_argument("--step_len",type=int,default=10000,help="the size between two regions")
@@ -33,6 +35,8 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
     parser.add_argument('--bed2', type=str, help='Path to bed file of matrix2')
     parser.add_argument('--MINGAP', type=int, default=2, help='Minimum gap value n*100000 (default: 2)')
     parser.add_argument('--SIGNAL_THRESHOLD', type=float, default=0.7, help='Signal threshold value (default: 0.7)')
+    parser.add_argument('-t', '--threads', type=int, default=max(1, multiprocessing.cpu_count() // 2),
+                        help='Number of worker threads used for internal processing and supported tools')
     return parser.parse_args()
 
 def get_interval(buck,name,threshold):
@@ -69,49 +73,65 @@ def get_interval(buck,name,threshold):
     dir_range[name]=centromeres
     return dir_range
 
-def kmer_cal(file):
-    # fasta_sequence={name:seq for name,seq in pyfastx.Fasta(file,build_index=False)}
-    count=0
-    for name,sequence in fasta_sequence.items():
-        sequence=sequence.upper()
+def _analyze_chromosome(name_sequence):
+    name, sequence = name_sequence
+    sequence = sequence.upper()
+    total_length = len(sequence)
+
+    local_kmer = defaultdict(int)
+    local_buck = defaultdict(list)
+    density_array = [0.0 for _ in range(step_len // 1000 + 1)]
+    count = 0
+
+    for i in range(len(sequence) - kmer_size + 1):
+        temp_kmer = sequence[i : i + kmer_size]
+        local_kmer[temp_kmer] += 1
+        count += 1
+        if count % step_len == 0:
+            length = len(local_kmer)
+            density_array[length // 1000] += 1
+            local_buck[length // 1000].append(count)
+            local_kmer.clear()
+
+    normalized_denominator = total_length // step_len + 1
+    for i in range(len(density_array)):
+        density_array[i] /= normalized_denominator
+
+    cumulative = 0
+    threshold = len(density_array) - 1
+    for i in range(len(density_array) - 1, 0, -1):
+        cumulative += density_array[i]
+        if cumulative >= 0.8:
+            threshold = i
+            break
+
+    intervals = get_interval(local_buck, name, threshold).get(name, '')
+
+    low_complexity = set()
+    for i in range(int(total_length / 200000) + 1):
+        seq = sequence[i * 200000:(i + 1) * 200000]
+        std = i * 200000
+        end = (i + 1) * 200000
+        diseq = {seq[k:k + 20] for k in range(len(seq) - 19)}
+        if len(diseq) < 100000:
+            low_complexity.add(std)
+            low_complexity.add(end)
+
+    return name, total_length, intervals, low_complexity
+
+
+def kmer_cal(file, threads):
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        results = executor.map(_analyze_chromosome, fasta_sequence.items())
+
+    for name, total_length, intervals, low_complexity in results:
         chrid_list.append(name)
-        total_length=len(sequence)
-        chr_length[name]=total_length
-        array = [0.0 for _ in range(step_len // 1000 + 1)]
-        for i in range(len(sequence) - kmer_size + 1):
-            temp_kmer = sequence[i : i + kmer_size]
-            kmer[temp_kmer] += 1
-            all_kmer[temp_kmer] += 1
-            count += 1
-            if(count % step_len == 0):
-                length = len(kmer)
-                array[length // 1000] += 1
-                buck[length // 1000].append(count)
-                kmer.clear()
-        for i in range(len(array)):
-            array[i] /= total_length // step_len + 1
-        temp = 0
-        threshold = len(array) - 1
-        for i in range(len(array) - 1,0,-1):
-            temp += array[i]
-            if(temp >= 0.8):
-                threshold = i
-                break
-        single=get_interval(buck,name,threshold)
-        if type(single)==dict:arange.update(single)
-        else:arange.update({name:''})
-        kmer.clear()
-        all_kmer.clear()
-        buck.clear()
-        count = 0
-        for i in range(int(total_length/200000)+1):
-            seq=sequence[i*200000:(i+1)*200000];std=i*200000;end=(i+1)*200000
-            diseq={seq[i:i+20] for i in range(len(seq)-19)}#查找kmer的种类数
-            if name not in kmer_count:kmer_count[name]=set()
-            if len(diseq)<100000:
-                kmer_count[name].add(std);kmer_count[name].add(end)
+        chr_length[name] = total_length
+        arange[name] = intervals
+        if low_complexity:
+            kmer_count[name] = low_complexity
     return arange
-    
+
 def merge_regions(region):
     final_result={};target_list=[]
     for i,all in region.items():
@@ -139,24 +159,50 @@ def merge_regions(region):
     return final_result
 
 def ex_gff(file):
+    def _feature_center(fields):
+        chrid = fields[0]
+        start = int(fields[3])
+        end = int(fields[4])
+        pos = int((start + end) * 0.5 / 1000000)
+        return chrid, pos
+
+    gene_features = []
+    mrna_features = []
+
     with open(file) as f:
-        count_dir={}
-        gff_gene_number = {}
         for line in f:
-            if '#' not in line and 'mRNA' in line:
-                linelist=line.split()
-                chrid=linelist[0];pos=int((int(linelist[3])+int(linelist[4]))*0.5/1000000)
-                if chrid not in count_dir:count_dir[chrid]={}
-                if pos not in count_dir[chrid]:count_dir[chrid][pos]=1
-                else:count_dir[chrid][pos]+=1
-        for j,count in count_dir.items():
-            gff_gene_number[j]={}
-            for i in range(max(count)):
-                if i not in count:
-                    gff_gene_number[j][str(i)+'-'+str(i+1)]=0
-                else:
-                    content=count[i]
-                    gff_gene_number[j][str(i)+'-'+str(i+1)]=content
+            if not line.strip() or line.startswith('#'):
+                continue
+            fields = line.split('	') if '	' in line else line.split()
+            if len(fields) < 5:
+                continue
+
+            feature_type = fields[2].lower()
+            if feature_type == 'gene':
+                gene_features.append(_feature_center(fields))
+            elif feature_type == 'mrna':
+                mrna_features.append(_feature_center(fields))
+
+    selected_features = gene_features if gene_features else mrna_features
+
+    count_dir = {}
+    for chrid, pos in selected_features:
+        if chrid not in count_dir:
+            count_dir[chrid] = {}
+        if pos not in count_dir[chrid]:
+            count_dir[chrid][pos] = 1
+        else:
+            count_dir[chrid][pos] += 1
+
+    gff_gene_number = {}
+    for chrid, count in count_dir.items():
+        gff_gene_number[chrid] = {}
+        if len(count) == 0:
+            continue
+        max_bin = max(count)
+        for i in range(max_bin + 1):
+            gff_gene_number[chrid][str(i) + '-' + str(i + 1)] = count.get(i, 0)
+
     return gff_gene_number
 
 def creat_matrix(input):
@@ -168,31 +214,30 @@ def creat_matrix(input):
 def findGap(matrix):
     # This function is finding Candidates for Centremeres and they will be return
     # with dict.
-    degrees = []
-    # Calculate degrees of nodes
-    for i in range(4, len(matrix)-3):
-        ddq = 0
-        for j in range(i-3, i):
-            ddq += matrix[j][i]
-        for j in range(i,i+3):
-            ddq += matrix[i][j]
-        degrees.append(ddq)
-    avg = np.mean(sorted(degrees)[:-1000])
+    n = len(matrix)
+    if n < 8:
+        return {}
 
-    variance = []
-    for i in degrees:
-        variance.append((i-avg)/avg)
+    degrees = (
+        matrix[1:n-6, 4:n-3] + matrix[2:n-5, 4:n-3] + matrix[3:n-4, 4:n-3] +
+        matrix[4:n-3, 4:n-3] + matrix[4:n-3, 5:n-2] + matrix[4:n-3, 6:n-1]
+    ).diagonal()
+    sorted_degrees = np.sort(degrees)
+    trim_index = max(1, len(sorted_degrees) - 1000)
+    avg = np.mean(sorted_degrees[:trim_index])
+
+    variance = (degrees - avg) / avg
     gap = {}
     errToler = {}
     singal = None
     for i in range(0, len(variance)):
-        if singal and (-variance[i] > SIGNAL_THRESHOLD):
+        if singal is not None and (-variance[i] > SIGNAL_THRESHOLD):
             gap [singal] += 1
-        if (singal == None) and (-variance[i] > SIGNAL_THRESHOLD):
+        if (singal is None) and (-variance[i] > SIGNAL_THRESHOLD):
             gap [i] = 1
             singal = i
             errToler[i] = 0
-        if singal and (-variance[i] <= SIGNAL_THRESHOLD):
+        if singal is not None and (-variance[i] <= SIGNAL_THRESHOLD):
             if errToler[singal] < 2:
                 errToler[singal] += 1
                 gap [singal] += 1
@@ -204,8 +249,8 @@ def findGap(matrix):
                     k -= 1
                 singal = None
     candidates = {key+4: value for key, value in gap.items()}
-    # Filter out the too short candidated gaps that are likely to be noise. 
-    filter_candidates = {key: value for key, value in 
+    # Filter out the too short candidated gaps that are likely to be noise.
+    filter_candidates = {key: value for key, value in
                          candidates.items() if value > MINGAP}
     return filter_candidates
 
@@ -223,25 +268,36 @@ def read_finer_matrix(input, bed):
 
 def findPosition(gap, selfweights, bed1, bed2):
     centremere = {}
-    mean_weight = np.mean(sorted(selfweights)[:-1000]) 
-    for key, item in gap.items():
-        if bed1[bed1["id"] == key]["chr"].iloc[0] != bed1[bed1["id"] == (key+item)]["chr"].iloc[0]:
-            continue
-        chr = bed1[bed1["id"] == key]["chr"].iloc[0]
-        start = bed1[bed1["id"] == key]["start"].iloc[0]
-        end = bed1[bed1["id"] == (key+item)]["start"].iloc[0]
+    mean_weight = np.mean(sorted(selfweights)[:-1000])
+    bed1_by_id = bed1.set_index('id')[['chr', 'start', 'end']]
+    bed2_by_id = bed2.set_index('id')[['chr', 'start', 'end']]
+    bed2_index = {(row.chr, row.start): idx for idx, row in bed2_by_id.iterrows()}
 
-        Lstart = int(bed2[(bed2["chr"] == chr) & (bed2["start"]==start)]["id"].iloc[0])
-        Rstart = int(bed2[(bed2["chr"] == chr) & (bed2["start"]==end)]["id"].iloc[0])
+    for key, item in gap.items():
+        if key not in bed1_by_id.index or (key + item) not in bed1_by_id.index:
+            continue
+        if bed1_by_id.loc[key, 'chr'] != bed1_by_id.loc[key + item, 'chr']:
+            continue
+
+        chr = bed1_by_id.loc[key, 'chr']
+        start = bed1_by_id.loc[key, 'start']
+        end = bed1_by_id.loc[key + item, 'start']
+
+        if (chr, start) not in bed2_index or (chr, end) not in bed2_index:
+            continue
+        Lstart = int(bed2_index[(chr, start)])
+        Rstart = int(bed2_index[(chr, end)])
+
         lbound, rbound = None, None
-        for i in range(Lstart, Lstart + 10):
-            if selfweights[i]/mean_weight < 0.4:
-                lbound = bed2[bed2["id"]==i]["start"].iloc[0]
+        for i in range(Lstart, min(Lstart + 10, len(selfweights))):
+            if selfweights[i]/mean_weight < 0.4 and i in bed2_by_id.index:
+                lbound = bed2_by_id.loc[i, 'start']
                 break
-        for i in range(Rstart, Rstart+10):
-            if selfweights[i]/mean_weight > 0.7:
-                rbound = bed2[bed2["id"]==i]["end"].iloc[0]
+        for i in range(Rstart, min(Rstart + 10, len(selfweights))):
+            if selfweights[i]/mean_weight > 0.7 and i in bed2_by_id.index:
+                rbound = bed2_by_id.loc[i, 'end']
                 break
+
         if chr not in centremere:
             centremere[chr] = []
         centremere[chr].append([lbound, rbound])
@@ -368,9 +424,9 @@ def find_enrichment_with_bin_size(big_interval, small_intervals, bin_size=1):
                     enrichment_map[bin_index] += 1
     return dict(enrichment_map)
 
-def search_ltr1(seqfile):
+def search_ltr1(seqfile, threads):
     exe=os.path.abspath(script_path+'/bin/ltr_finder/ltr_finder')
-    arg=[exe,'-D','20000','-d','1000','-L','3500','-l','100','-p','20','-C','-M','0.9',seqfile,'>',seqfile+'_l1.txt']
+    arg=[exe,'-D','20000','-d','1000','-L','3500','-l','100','-p',str(threads),'-C','-M','0.9',seqfile,'>',seqfile+'_l1.txt']
     result=subprocess.Popen(' '.join(arg),shell=True)
     result.wait()
     ltr1={}
@@ -384,7 +440,7 @@ def search_ltr1(seqfile):
                 ltr1[ID]=pos
     return ltr1
 
-def search_ltr2(file):
+def search_ltr2(file, threads):
     fname=os.path.basename(file)
     if os.path.exists('./gtltr'):
         shutil.rmtree('./gtltr')
@@ -584,6 +640,7 @@ if __name__ == '__main__':
     step_len = args.step_len
     MINGAP = args.MINGAP
     SIGNAL_THRESHOLD = args.SIGNAL_THRESHOLD
+    threads = max(1, args.threads)
     kmer = defaultdict(int)
     all_kmer = defaultdict(int)
     buck = defaultdict(list)
@@ -624,7 +681,7 @@ if __name__ == '__main__':
             arg=[exe,'ltrharvest','-index',database,'-similar','90','-vic','10','-seed','20','-seqids','yes','-minlenltr','100','-maxlenltr','7000','-mintsd','4','-maxtsd','6','-motif','TGCA','-motifmis','1','>',database+'.harvest.scn']
             step2=subprocess.Popen(' '.join(arg),shell=True)
             exe=script_path+'/bin/ltr_finder/ltr_finder'
-            arg=[exe,'-D','15000','-d','1000','-L','7000','-l','100','-p','20','-C','-M','0.9',fasta,'>', database+'.finder.scn']
+            arg=[exe,'-D','15000','-d','1000','-L','7000','-l','100','-p',str(threads),'-C','-M','0.9',fasta,'>', database+'.finder.scn']
             step3=subprocess.Popen(' '.join(arg),shell=True)
         else:
             sys.stderr.write(f"{RED}The gt software has not been detected in the "
@@ -634,7 +691,7 @@ if __name__ == '__main__':
                  "https://github.com/genometools/genometools.{RESET}\n")
             sys.exit(1)
     
-    arange=kmer_cal(fasta)
+    arange=kmer_cal(fasta, threads)
     # print('fasta_seq',fasta_sequence)
     kmer_dir=merge_regions(arange)
     file_size=os.path.getsize(fasta)
@@ -684,7 +741,7 @@ if __name__ == '__main__':
         exe='LTR_retriever'
         a=shutil.which('LTR_retriever')
         if a!=None:
-            arg=[exe,'-genome',fasta, '-inharvest',database+'.harvest.scn','-infinder',database+'.finder.scn','-threads','60','-u','4.02e-9']
+            arg=[exe,'-genome',fasta, '-inharvest',database+'.harvest.scn','-infinder',database+'.finder.scn','-threads',str(threads),'-u','4.02e-9']
             step4=subprocess.Popen(arg)
             step4.wait()
         else:
