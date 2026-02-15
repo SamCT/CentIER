@@ -1169,10 +1169,10 @@ if __name__ == '__main__':
             monomer_position.write(ID+"\t"+str(s2)+"\t"+str(e2)+"\n")
     monomer_position.close()
     ltr_result=open(output + prefix+"_ltr_position.txt", "w")
-    ltr1=search_ltr1(all_cen_seq_path, threads)
+    ltr1=search_ltr1(all_cen_seq_path)
     [ltr_result.write(i+"\t"+j+"\n") for i,j in ltr1.items() if j!=""]
 
-    ltr2=search_ltr2(all_cen_seq_path, threads)
+    ltr2=search_ltr2(all_cen_seq_path)
     for index, ID in enumerate(ltr1):
         if index in ltr2:
             for i in ltr2[index]:
