@@ -55,7 +55,7 @@ usage: CentIERv3.0.py [-h] [-o OUTPUT] [--gff GFF] [-k KMER_SIZE]
                       [--mul_cents] [--matrix1 MATRIX1]
                       [--matrix2 MATRIX2] [--bed1 BED1] [--bed2 BED2]
                       [--MINGAP MINGAP]
-                      [--SIGNAL_THRESHOLD SIGNAL_THRESHOLD] [-t THREADS]
+                      [--SIGNAL_THRESHOLD SIGNAL_THRESHOLD] [--resume] [-t THREADS]
                       genome
 
 positional arguments:
@@ -83,6 +83,8 @@ options:
   --MINGAP MINGAP       Minimum gap value n*100000 (default: 2)
   --SIGNAL_THRESHOLD SIGNAL_THRESHOLD
                         Signal threshold value (default: 0.7)
+  --resume              Resume from existing intermediate results
+                        in the output directory when possible
   -t THREADS, --threads THREADS
                         Number of worker threads used for internal
                         processing and supported tools
@@ -91,6 +93,8 @@ options:
 
 
 You can control parallelism with `-t/--threads` (for example `CentIER.py -t 16 genome.fasta`).
+
+Use `--resume` to reuse existing intermediate files (TRF/LTR outputs and previously written centromere range/sequence files) after an interrupted run.
 
 ``` shell
 CentIER.py genome.fasta
