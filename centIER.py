@@ -35,9 +35,28 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
     parser.add_argument('--bed2', type=str, help='Path to bed file of matrix2')
     parser.add_argument('--MINGAP', type=int, default=2, help='Minimum gap value n*100000 (default: 2)')
     parser.add_argument('--SIGNAL_THRESHOLD', type=float, default=0.7, help='Signal threshold value (default: 0.7)')
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume from existing intermediate results in the output directory when possible')
     parser.add_argument('-t', '--threads', type=int, default=max(1, multiprocessing.cpu_count() // 2),
                         help='Number of worker threads used for internal processing and supported tools')
     return parser.parse_args()
+
+
+def write_centromere_sequences(range_path, output_path, fasta, chr_length):
+    fa = pyfastx.Fasta(fasta)
+    with open(output_path, "w") as all_cen_seq, open(range_path) as f:
+        for line in f:
+            linelist = line.split()
+            if len(linelist) < 3:
+                continue
+            ID = linelist[0]
+            start = int(linelist[1]);end = int(linelist[2])
+            chrlength = chr_length[ID]
+            if end > chrlength:end = chrlength
+            if start == 0:start = 1
+            seq_range = (start, end)
+            all_cen_seq.write(">"+ID+"_centromere_seq\n")
+            all_cen_seq.write(fa.fetch(ID, seq_range)+"\n")
 
 def get_interval(buck,name,threshold, chr_len=None):
     centromeres = []
@@ -68,7 +87,7 @@ def get_interval(buck,name,threshold, chr_len=None):
         intervals.sort(key = lambda interval : interval[0])
         # print(intervals)
         for interval in intervals:
-            chrom_length = chr_len if chr_len is not None else chr_length[name]
+            chrom_length = chr_len if chr_len is not None else chr_length.get(name, len(fasta_sequence.get(name, '')))
             centromeres.append([max(0,interval[0]),min(interval[1],chrom_length)])
             # print([max(0,interval[0]),min(interval[1],len(fasta_sequence[name]))])
     dir_range[name]=centromeres
@@ -106,7 +125,7 @@ def _analyze_chromosome(name_sequence):
             threshold = i
             break
 
-    intervals = get_interval(local_buck, name, threshold).get(name, '')
+    intervals = get_interval(local_buck, name, threshold, chr_len=total_length).get(name, '')
 
     low_complexity = set()
     for i in range(int(total_length / 200000) + 1):
@@ -662,16 +681,27 @@ if __name__ == '__main__':
     # try:
     print ('Searching for tandem repeat sequences')
     prefix = os.path.basename(fasta) ### Temporary file prefix
+    resume = args.resume
+    trf_output = prefix+".2.5.7.80.10.50.2000.dat"
+    ltr_dist_file = prefix+'.out.LTR.distribution.txt'
+    ltr_dist_mod_file = prefix+'.mod.out.LTR.distribution.txt'
+    range_path = output + prefix+"_centromere_range.txt"
+    all_cen_seq_path = output + prefix+"_all_centromere_seq.txt"
 
 
-    if trf:
+    if trf and not (resume and os.path.exists(trf_output)):
         arg=[script_path+"/bin/trf409.linux64",fasta,'2','5','7','80','10','50','2000','-h','-f','-d','-m','-l','15']
         TRF_search=subprocess.Popen(arg)
         print ('searching for all LTRs of the input genome')
+    elif trf and resume:
+        print(f"--resume enabled: reusing existing TRF output: {trf_output}")
 
     database = prefix+'_LTR_database'
     
-    if gt:
+    ltr_outputs_exist = os.path.exists(ltr_dist_file) or os.path.exists(ltr_dist_mod_file)
+    if resume and ltr_outputs_exist:
+        print("--resume enabled: reusing existing LTR distribution output")
+    if gt and not (resume and ltr_outputs_exist):
      ### database put in tmp path
         a=shutil.which('gt')
         if a!=None:
@@ -733,12 +763,12 @@ if __name__ == '__main__':
         hic_dir=merge_regions(hic_dir)
     else:hic_dir={}
     
-    if gt:
+    if gt and not (resume and ltr_outputs_exist):
         step2.wait()
         step3.wait()
     
     
-    if ltr:
+    if ltr and not (resume and ltr_outputs_exist):
         exe='LTR_retriever'
         a=shutil.which('LTR_retriever')
         if a!=None:
@@ -752,7 +782,7 @@ if __name__ == '__main__':
                  "variables. The download link is "
                  "https://github.com/oushujun/LTR_retriever.{RESET}\n")
             sys.exit(1)
-    if trf:
+    if trf and not (resume and os.path.exists(trf_output)):
         TRF_search.wait()
     LTR_region={};LTR_level={};level_dir={}
     if os.path.exists(prefix+'.out.LTR.distribution.txt') or os.path.exists(prefix+'.mod.out.LTR.distribution.txt'):
@@ -1110,43 +1140,39 @@ if __name__ == '__main__':
                         else:
                             all_list.append((ID,cs,ce))
     print("****************************** Start defining the centromere range... *************************")
-    rangefile=open(output + prefix+"_centromere_range.txt","w")
-    [rangefile.write(i[0]+'\t'+str(i[1])+'\t'+str(i[2])+'\n') for i in all_list]
-    rangefile.close()
+    if resume and os.path.exists(range_path):
+        print(f"--resume enabled: reusing existing centromere range file: {range_path}")
+    else:
+        rangefile=open(range_path,"w")
+        [rangefile.write(i[0]+'\t'+str(i[1])+'\t'+str(i[2])+'\n') for i in all_list]
+        rangefile.close()
     print("****************************** Centromere range determination completed *************************")
-    all_cen_seq=open(output + prefix+"_all_centromere_seq.txt","w")
-    fa=pyfastx.Fasta(fasta)
-    with open(output + prefix+"_centromere_range.txt") as f:
-        for line in f:
-            linelist=line.split()
-            ID=linelist[0]
-            start=int(linelist[1]);end=int(linelist[2])
-            # print(chr_length)
-            chrlength=chr_length[ID]
-            if end>chrlength:end=chrlength
-            if start==0:start=1
-            seq_range=(start,end)
-            all_cen_seq.write(">"+ID+"_centromere_seq\n")
-            all_cen_seq.write(fa.fetch(ID, seq_range)+"\n")
-    all_cen_seq.close()
+    if resume and os.path.exists(all_cen_seq_path):
+        print(f"--resume enabled: reusing existing centromere sequence file: {all_cen_seq_path}")
+    else:
+        write_centromere_sequences(range_path, all_cen_seq_path, fasta, chr_length)
     print("****************************** Annotating the centromere *************************")
     monomer_position=open(output + prefix +"_monomer_in_centromere.txt","w")
-    with open(output + prefix+ "_centromere_range.txt") as f:
+    with open(range_path) as f:
         for line in f:
             linelist=line.split()
             ID=linelist[0];s=int(linelist[1]);e=int(linelist[2])
-            if ID in precise_range:s1,e1=precise_range[ID]
-            else:s1,e1,seq1=st_range[ID]
+            if ID in precise_range:
+                s1,e1=precise_range[ID]
+            elif ID in st_range and st_range[ID] != '':
+                s1,e1,seq1=st_range[ID]
+            else:
+                s1,e1=s,e
             s2=s1-s;e2=e1-s
             if s2<0:s2=1
             if e2-s2>e-s:e2=e
             monomer_position.write(ID+"\t"+str(s2)+"\t"+str(e2)+"\n")
     monomer_position.close()
     ltr_result=open(output + prefix+"_ltr_position.txt", "w")
-    ltr1=search_ltr1(output + prefix+"_all_centromere_seq.txt")
+    ltr1=search_ltr1(all_cen_seq_path, threads)
     [ltr_result.write(i+"\t"+j+"\n") for i,j in ltr1.items() if j!=""]
 
-    ltr2=search_ltr2(output + prefix+"_all_centromere_seq.txt")
+    ltr2=search_ltr2(all_cen_seq_path, threads)
     for index, ID in enumerate(ltr1):
         if index in ltr2:
             for i in ltr2[index]:
