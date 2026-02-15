@@ -55,7 +55,7 @@ usage: CentIERv3.0.py [-h] [-o OUTPUT] [--gff GFF] [-k KMER_SIZE]
                       [--mul_cents] [--matrix1 MATRIX1]
                       [--matrix2 MATRIX2] [--bed1 BED1] [--bed2 BED2]
                       [--MINGAP MINGAP]
-                      [--SIGNAL_THRESHOLD SIGNAL_THRESHOLD]
+                      [--SIGNAL_THRESHOLD SIGNAL_THRESHOLD] [-t THREADS]
                       genome
 
 positional arguments:
@@ -65,7 +65,7 @@ options:
   -h, --help            show this help message and exit
   -o OUTPUT, --output OUTPUT
                         output path
-  --gff GFF             optional, annotation file (gff or gtf format)
+  --gff GFF             optional, annotation file (gff or gtf format; gene features preferred)
   -k KMER_SIZE, --kmer_size KMER_SIZE
                         the size of kmer
   -c CENTER_TOLERANCE, --center_tolerance CENTER_TOLERANCE
@@ -83,8 +83,14 @@ options:
   --MINGAP MINGAP       Minimum gap value n*100000 (default: 2)
   --SIGNAL_THRESHOLD SIGNAL_THRESHOLD
                         Signal threshold value (default: 0.7)
+  -t THREADS, --threads THREADS
+                        Number of worker threads used for internal
+                        processing and supported tools
 ```
 **CentIER** have one positional argument **genome.fasta**. If you only have a T2T assembly (T2T level or Chromosome level genomes), you can running this tools as follow:  
+
+
+You can control parallelism with `-t/--threads` (for example `CentIER.py -t 16 genome.fasta`).
 
 ``` shell
 CentIER.py genome.fasta
