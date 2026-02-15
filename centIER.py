@@ -39,7 +39,7 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
                         help='Number of worker threads used for internal processing and supported tools')
     return parser.parse_args()
 
-def get_interval(buck,name,threshold):
+def get_interval(buck,name,threshold, chr_len=None):
     centromeres = []
     dir_range={}
     temp = []
@@ -68,7 +68,8 @@ def get_interval(buck,name,threshold):
         intervals.sort(key = lambda interval : interval[0])
         # print(intervals)
         for interval in intervals:
-            centromeres.append([max(0,interval[0]),min(interval[1],chr_length[name])])
+            chrom_length = chr_len if chr_len is not None else chr_length[name]
+            centromeres.append([max(0,interval[0]),min(interval[1],chrom_length)])
             # print([max(0,interval[0]),min(interval[1],len(fasta_sequence[name]))])
     dir_range[name]=centromeres
     return dir_range
