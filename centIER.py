@@ -87,7 +87,7 @@ def get_interval(buck,name,threshold, chr_len=None):
         intervals.sort(key = lambda interval : interval[0])
         # print(intervals)
         for interval in intervals:
-            chrom_length = chr_len if chr_len is not None else chr_length[name]
+            chrom_length = chr_len if chr_len is not None else chr_length.get(name, len(fasta_sequence.get(name, '')))
             centromeres.append([max(0,interval[0]),min(interval[1],chrom_length)])
             # print([max(0,interval[0]),min(interval[1],len(fasta_sequence[name]))])
     dir_range[name]=centromeres
@@ -125,7 +125,7 @@ def _analyze_chromosome(name_sequence):
             threshold = i
             break
 
-    intervals = get_interval(local_buck, name, threshold).get(name, '')
+    intervals = get_interval(local_buck, name, threshold, chr_len=total_length).get(name, '')
 
     low_complexity = set()
     for i in range(int(total_length / 200000) + 1):
