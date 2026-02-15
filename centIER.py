@@ -3,6 +3,7 @@ import argparse
 import sys,subprocess,os
 import pyfastx,random
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import shutil
@@ -33,9 +34,11 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
     parser.add_argument('--bed2', type=str, help='Path to bed file of matrix2')
     parser.add_argument('--MINGAP', type=int, default=2, help='Minimum gap value n*100000 (default: 2)')
     parser.add_argument('--SIGNAL_THRESHOLD', type=float, default=0.7, help='Signal threshold value (default: 0.7)')
+    parser.add_argument('-t', '--threads', type=int, default=max(1, os.cpu_count() or 1),
+                        help='Number of worker threads used for internal and external tools (default: all available CPUs)')
     return parser.parse_args()
 
-def get_interval(buck,name,threshold):
+def get_interval(buck,name,threshold,step_len,center_tolerance,chr_len):
     centromeres = []
     dir_range={}
     temp = []
@@ -64,52 +67,67 @@ def get_interval(buck,name,threshold):
         intervals.sort(key = lambda interval : interval[0])
         # print(intervals)
         for interval in intervals:
-            centromeres.append([max(0,interval[0]),min(interval[1],chr_length[name])])
+            centromeres.append([max(0,interval[0]),min(interval[1],chr_len)])
             # print([max(0,interval[0]),min(interval[1],len(fasta_sequence[name]))])
     dir_range[name]=centromeres
     return dir_range
 
+def _kmer_worker(item):
+    name, sequence = item
+    count = 0
+    buck = defaultdict(list)
+    kmer = defaultdict(int)
+    dir_range = {}
+    kmer_anchor = set()
+
+    sequence=sequence.upper()
+    total_length=len(sequence)
+    array = [0.0 for _ in range(step_len // 1000 + 1)]
+    for i in range(len(sequence) - kmer_size + 1):
+        temp_kmer = sequence[i : i + kmer_size]
+        kmer[temp_kmer] += 1
+        count += 1
+        if(count % step_len == 0):
+            length = len(kmer)
+            array[length // 1000] += 1
+            buck[length // 1000].append(count)
+            kmer.clear()
+    for i in range(len(array)):
+        array[i] /= total_length // step_len + 1
+    temp = 0
+    threshold = len(array) - 1
+    for i in range(len(array) - 1,0,-1):
+        temp += array[i]
+        if(temp >= 0.8):
+            threshold = i
+            break
+    single=get_interval(buck,name,threshold,step_len,center_tolerance,total_length)
+    if type(single)==dict:
+        dir_range.update(single)
+    else:
+        dir_range.update({name:''})
+
+    for i in range(int(total_length/200000)+1):
+        seq=sequence[i*200000:(i+1)*200000]
+        std=i*200000
+        end=(i+1)*200000
+        diseq={seq[i:i+20] for i in range(len(seq)-19)}#查找kmer的种类数
+        if len(diseq)<100000:
+            kmer_anchor.add(std)
+            kmer_anchor.add(end)
+    return name, total_length, dir_range.get(name, ''), kmer_anchor
+
 def kmer_cal(file):
     # fasta_sequence={name:seq for name,seq in pyfastx.Fasta(file,build_index=False)}
-    count=0
-    for name,sequence in fasta_sequence.items():
-        sequence=sequence.upper()
+    workers = min(threads, max(1, len(fasta_sequence)))
+    for name in fasta_sequence:
         chrid_list.append(name)
-        total_length=len(sequence)
-        chr_length[name]=total_length
-        array = [0.0 for _ in range(step_len // 1000 + 1)]
-        for i in range(len(sequence) - kmer_size + 1):
-            temp_kmer = sequence[i : i + kmer_size]
-            kmer[temp_kmer] += 1
-            all_kmer[temp_kmer] += 1
-            count += 1
-            if(count % step_len == 0):
-                length = len(kmer)
-                array[length // 1000] += 1
-                buck[length // 1000].append(count)
-                kmer.clear()
-        for i in range(len(array)):
-            array[i] /= total_length // step_len + 1
-        temp = 0
-        threshold = len(array) - 1
-        for i in range(len(array) - 1,0,-1):
-            temp += array[i]
-            if(temp >= 0.8):
-                threshold = i
-                break
-        single=get_interval(buck,name,threshold)
-        if type(single)==dict:arange.update(single)
-        else:arange.update({name:''})
-        kmer.clear()
-        all_kmer.clear()
-        buck.clear()
-        count = 0
-        for i in range(int(total_length/200000)+1):
-            seq=sequence[i*200000:(i+1)*200000];std=i*200000;end=(i+1)*200000
-            diseq={seq[i:i+20] for i in range(len(seq)-19)}#查找kmer的种类数
-            if name not in kmer_count:kmer_count[name]=set()
-            if len(diseq)<100000:
-                kmer_count[name].add(std);kmer_count[name].add(end)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for name, total_length, single_range, anchors in executor.map(_kmer_worker, fasta_sequence.items()):
+            chr_length[name] = total_length
+            arange.update({name: single_range})
+            if anchors:
+                kmer_count[name] = anchors
     return arange
     
 def merge_regions(region):
@@ -168,20 +186,23 @@ def creat_matrix(input):
 def findGap(matrix):
     # This function is finding Candidates for Centremeres and they will be return
     # with dict.
-    degrees = []
-    # Calculate degrees of nodes
-    for i in range(4, len(matrix)-3):
-        ddq = 0
-        for j in range(i-3, i):
-            ddq += matrix[j][i]
-        for j in range(i,i+3):
-            ddq += matrix[i][j]
-        degrees.append(ddq)
-    avg = np.mean(sorted(degrees)[:-1000])
+    matrix = np.asarray(matrix)
+    degrees = (
+        matrix[1:-6, 4:-3] +
+        matrix[2:-5, 4:-3] +
+        matrix[3:-4, 4:-3] +
+        matrix[4:-3, 4:-3] +
+        matrix[4:-3, 5:-2] +
+        matrix[4:-3, 6:-1]
+    )
+    sorted_degrees = np.sort(degrees)
+    if sorted_degrees.size > 1000:
+        baseline = sorted_degrees[:-1000]
+    else:
+        baseline = sorted_degrees
+    avg = np.mean(baseline) if baseline.size else 1
 
-    variance = []
-    for i in degrees:
-        variance.append((i-avg)/avg)
+    variance = (degrees - avg) / avg
     gap = {}
     errToler = {}
     singal = None
@@ -370,7 +391,7 @@ def find_enrichment_with_bin_size(big_interval, small_intervals, bin_size=1):
 
 def search_ltr1(seqfile):
     exe=os.path.abspath(script_path+'/bin/ltr_finder/ltr_finder')
-    arg=[exe,'-D','20000','-d','1000','-L','3500','-l','100','-p','20','-C','-M','0.9',seqfile,'>',seqfile+'_l1.txt']
+    arg=[exe,'-D','20000','-d','1000','-L','3500','-l','100','-p',str(threads),'-C','-M','0.9',seqfile,'>',seqfile+'_l1.txt']
     result=subprocess.Popen(' '.join(arg),shell=True)
     result.wait()
     ltr1={}
@@ -424,7 +445,7 @@ def exseq_translate(prefix,fa_file,script_path):
         six_frame_translate(inSeq, f)
     filepath=prefix+"_ltr_position.txt_seqt.txt"
     hmmsearch= script_path + '/bin/hmmsearch' 
-    args=[' ','--noali','--tblout',prefix+'LTR-hmmresult.txt','-E','1e-5',script_path+'/bin/REXdb.hmm',filepath]
+    args=[' ','--noali','--tblout',prefix+'LTR-hmmresult.txt','-E','1e-5','--cpu',str(threads),script_path+'/bin/REXdb.hmm',filepath]
     args=hmmsearch+" ".join(args)
     result=subprocess.Popen(args,shell=True)
     result.wait()
@@ -584,6 +605,7 @@ if __name__ == '__main__':
     step_len = args.step_len
     MINGAP = args.MINGAP
     SIGNAL_THRESHOLD = args.SIGNAL_THRESHOLD
+    threads = max(1, args.threads)
     kmer = defaultdict(int)
     all_kmer = defaultdict(int)
     buck = defaultdict(list)
@@ -624,7 +646,7 @@ if __name__ == '__main__':
             arg=[exe,'ltrharvest','-index',database,'-similar','90','-vic','10','-seed','20','-seqids','yes','-minlenltr','100','-maxlenltr','7000','-mintsd','4','-maxtsd','6','-motif','TGCA','-motifmis','1','>',database+'.harvest.scn']
             step2=subprocess.Popen(' '.join(arg),shell=True)
             exe=script_path+'/bin/ltr_finder/ltr_finder'
-            arg=[exe,'-D','15000','-d','1000','-L','7000','-l','100','-p','20','-C','-M','0.9',fasta,'>', database+'.finder.scn']
+            arg=[exe,'-D','15000','-d','1000','-L','7000','-l','100','-p',str(threads),'-C','-M','0.9',fasta,'>', database+'.finder.scn']
             step3=subprocess.Popen(' '.join(arg),shell=True)
         else:
             sys.stderr.write(f"{RED}The gt software has not been detected in the "
@@ -684,7 +706,7 @@ if __name__ == '__main__':
         exe='LTR_retriever'
         a=shutil.which('LTR_retriever')
         if a!=None:
-            arg=[exe,'-genome',fasta, '-inharvest',database+'.harvest.scn','-infinder',database+'.finder.scn','-threads','60','-u','4.02e-9']
+            arg=[exe,'-genome',fasta, '-inharvest',database+'.harvest.scn','-infinder',database+'.finder.scn','-threads',str(threads),'-u','4.02e-9']
             step4=subprocess.Popen(arg)
             step4.wait()
         else:
