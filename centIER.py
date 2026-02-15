@@ -24,7 +24,7 @@ Xu, D. et al. CentIER: accurate centromere identification for plant genome. Plan
     parser = argparse.ArgumentParser(description=software)
     parser.add_argument("genome",help="Genome fasta file need to annotation")
     parser.add_argument('-o',"--output", default='./CentIER_final_results', help='output path')
-    parser.add_argument("--gff",help="optional, annotation file (gff or gtf format)")
+    parser.add_argument("--gff",help="optional, annotation file (gff or gtf format); gene features are preferred")
     parser.add_argument("-k","--kmer_size",type=int,default=21,help="the size of kmer")
     parser.add_argument("-c","--center_tolerance",type=int,default=15,help="the fine-tuning size between two regions")
     parser.add_argument("--step_len",type=int,default=10000,help="the size between two regions")
@@ -159,24 +159,50 @@ def merge_regions(region):
     return final_result
 
 def ex_gff(file):
+    def _feature_center(fields):
+        chrid = fields[0]
+        start = int(fields[3])
+        end = int(fields[4])
+        pos = int((start + end) * 0.5 / 1000000)
+        return chrid, pos
+
+    gene_features = []
+    mrna_features = []
+
     with open(file) as f:
-        count_dir={}
-        gff_gene_number = {}
         for line in f:
-            if '#' not in line and 'mRNA' in line:
-                linelist=line.split()
-                chrid=linelist[0];pos=int((int(linelist[3])+int(linelist[4]))*0.5/1000000)
-                if chrid not in count_dir:count_dir[chrid]={}
-                if pos not in count_dir[chrid]:count_dir[chrid][pos]=1
-                else:count_dir[chrid][pos]+=1
-        for j,count in count_dir.items():
-            gff_gene_number[j]={}
-            for i in range(max(count)):
-                if i not in count:
-                    gff_gene_number[j][str(i)+'-'+str(i+1)]=0
-                else:
-                    content=count[i]
-                    gff_gene_number[j][str(i)+'-'+str(i+1)]=content
+            if not line.strip() or line.startswith('#'):
+                continue
+            fields = line.split('	') if '	' in line else line.split()
+            if len(fields) < 5:
+                continue
+
+            feature_type = fields[2].lower()
+            if feature_type == 'gene':
+                gene_features.append(_feature_center(fields))
+            elif feature_type == 'mrna':
+                mrna_features.append(_feature_center(fields))
+
+    selected_features = gene_features if gene_features else mrna_features
+
+    count_dir = {}
+    for chrid, pos in selected_features:
+        if chrid not in count_dir:
+            count_dir[chrid] = {}
+        if pos not in count_dir[chrid]:
+            count_dir[chrid][pos] = 1
+        else:
+            count_dir[chrid][pos] += 1
+
+    gff_gene_number = {}
+    for chrid, count in count_dir.items():
+        gff_gene_number[chrid] = {}
+        if len(count) == 0:
+            continue
+        max_bin = max(count)
+        for i in range(max_bin + 1):
+            gff_gene_number[chrid][str(i) + '-' + str(i + 1)] = count.get(i, 0)
+
     return gff_gene_number
 
 def creat_matrix(input):

@@ -65,7 +65,7 @@ options:
   -h, --help            show this help message and exit
   -o OUTPUT, --output OUTPUT
                         output path
-  --gff GFF             optional, annotation file (gff or gtf format)
+  --gff GFF             optional, annotation file (gff or gtf format; gene features preferred)
   -k KMER_SIZE, --kmer_size KMER_SIZE
                         the size of kmer
   -c CENTER_TOLERANCE, --center_tolerance CENTER_TOLERANCE
