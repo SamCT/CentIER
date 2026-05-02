@@ -878,7 +878,10 @@ if __name__ == '__main__':
         skipped_seqs=[]
         for i,content in region_percent.items():
             if i not in number_list or len(number_list[i]) == 0:
-                skipped_seqs.append(i)
+                sys.stderr.write(
+                    f"{YELLOW}Warning: no merged candidate intervals were retained for sequence "
+                    f"'{i}'. Skipping this sequence in the final centromere scoring step.{RESET}\n"
+                )
                 continue
             max_number=max(number_list[i])
             content_sort=sorted(content,key=lambda x:x[2],reverse=True)
