@@ -650,6 +650,8 @@ def statistics_ltr(prefix):
 if __name__ == '__main__':
     trf, gt, ltr = 1, 1, 1
     RED = '\033[91m'
+    YELLOW = '\033[93m'
+    GREEN = '\033[92m'
     RESET = '\033[0m' ### give a error color
     args = argparseFunc()
     fasta = args.genome
@@ -677,6 +679,9 @@ if __name__ == '__main__':
     kmer_count={};listl=[];ranges={};dirfinal={}
     chrid_list=[];chr_length={};arange={};fasta_sequence={};repeat_file=False
     fasta_sequence={name:seq for name,seq in pyfastx.Fasta(fasta,build_index=False)}
+    seq_names=list(fasta_sequence.keys())
+    preview=", ".join(seq_names[:5]) if len(seq_names)>=1 else "None"
+    print(f"{GREEN}[CentIER] Loaded {len(seq_names)} sequences from FASTA. Example headers: {preview}{RESET}")
     #The Linux system should be a 64-bit system.
     # try:
     print ('Searching for tandem repeat sequences')
@@ -722,7 +727,9 @@ if __name__ == '__main__':
                  "https://github.com/genometools/genometools.{RESET}\n")
             sys.exit(1)
     
+    print(f"{GREEN}[CentIER] Step 1/4: calculating k-mer-based candidate regions...{RESET}")
     arange=kmer_cal(fasta, threads)
+    print(f"{GREEN}[CentIER] Step 1/4 complete: processed {len(chrid_list)} sequences.{RESET}")
     # print('fasta_seq',fasta_sequence)
     kmer_dir=merge_regions(arange)
     file_size=os.path.getsize(fasta)
@@ -772,6 +779,7 @@ if __name__ == '__main__':
         exe='LTR_retriever'
         a=shutil.which('LTR_retriever')
         if a!=None:
+            print(f"{GREEN}[CentIER] Step 2/4: running LTR_retriever and building LTR distribution...{RESET}")
             arg=[exe,'-genome',fasta, '-inharvest',database+'.harvest.scn','-infinder',database+'.finder.scn','-threads',str(threads),'-u','4.02e-9']
             step4=subprocess.Popen(arg)
             step4.wait()
@@ -815,6 +823,7 @@ if __name__ == '__main__':
     if repeat_file==False or mul_cents==True:
         t_cont=[];k_cont=[];tf_cont=[];hic_cont=[];final_result={};target_list=[];number=0
         region_percent={};tandem_repeat={};number_list={};precise_range={}
+        print(f"{GREEN}[CentIER] Step 3/4: collecting tandem-repeat and LTR-supported candidates...{RESET}")
         monomer_select=strict_range(bat)
         st_range=strict_range_repeat(dirfinal,bat)
         tandem_dir={}
@@ -865,7 +874,12 @@ if __name__ == '__main__':
                             region_percent[i].append(list(all[-1])+[number])
                             number_list[i].append(number)
                         target_list=[]
+        print(f"{GREEN}[CentIER] Step 4/4: final centromere scoring across {len(region_percent)} sequences...{RESET}")
+        skipped_seqs=[]
         for i,content in region_percent.items():
+            if i not in number_list or len(number_list[i]) == 0:
+                skipped_seqs.append(i)
+                continue
             max_number=max(number_list[i])
             content_sort=sorted(content,key=lambda x:x[2],reverse=True)
             # print(content_sort)
@@ -875,6 +889,16 @@ if __name__ == '__main__':
                     final_result[i].append(j)
                 elif mul_cents==True and c>=1:
                     final_result[i].append(j)
+        if skipped_seqs:
+            skipped_preview=", ".join(skipped_seqs[:10])
+            sys.stderr.write(
+                f"{YELLOW}Warning: {len(skipped_seqs)} sequence(s) had no retained merged candidate intervals "
+                f"and were skipped during final scoring. Example IDs: {skipped_preview}{RESET}\n"
+            )
+            sys.stderr.write(
+                f"{YELLOW}This does NOT require chr01/chr02 naming; CentIER accepts arbitrary FASTA headers "
+                f"(e.g., chrY, Sc_24).{RESET}\n"
+            )
         if mul_cents==False:
             s=0;e=0;all_list=[]
             bin_size = 500000
